@@ -1,123 +1,67 @@
-# AI Video Generator
+from __future__ import annotations
 
-A full-stack AI video generation starter with:
-- FastAPI backend
-- React frontend
-- async job queue
-- mock generation mode for local development
-- optional real text-to-video generation via Replicate
+import os
+from datetime import datetime, timedelta
+from typing import Any
 
-## Overview
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
 
-This project demonstrates a realistic AI video app workflow:
-- user enters a prompt
-- the frontend submits a generation request
-- the backend queues the job and processes it asynchronously
-- the frontend polls for status and downloads the finished video
+from database import SessionLocal
+from models import User
 
-## Tech stack
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_DAYS = 7
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
 
-- Backend: FastAPI + Python
-- Frontend: React + Vite
-- Video generation: mock ffmpeg mode or Replicate API
-- Storage: local disk under `output/`
 
-## Project layout
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
 
-```text
-ai-video-generator/
-├── app.py
-├── requirements.txt
-├── .env.example
-├── README.md
-├── services/
-│   └── video_service.py
-├── templates/
-│   └── index.html
-├── frontend/
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── index.html
-│   └── src/
-│       ├── App.jsx
-│       ├── main.jsx
-│       └── styles.css
-├── output/
-└── .venv/
-```
 
-## Quick start
+def verify_password(password: str, password_hash: str) -> bool:
+    return pwd_context.verify(password, password_hash)
 
-### 1) Python backend
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app:app --reload
-```
+def create_access_token(user: User) -> str:
+    payload = {
+        "sub": str(user.id),
+        "username": user.username,
+        "exp": datetime.utcnow() + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-### 2) React frontend
 
-```bash
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0
-```
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-Open the frontend in the browser at:
-```text
-http://localhost:5173
-```
 
-The backend is available at:
-```text
-http://localhost:8000
-```
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> User:
+    if not credentials or not credentials.credentials:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
 
-## Environment variables
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
-```env
-REPLICATE_API_TOKEN=
-VIDEO_MODEL=genmo/mochi-1-preview
-```
-
-If no token is set, the app falls back to mock generation.
-
-## Mock mode requirements
-
-The mock generator uses ffmpeg, so you need `ffmpeg` installed:
-
-- macOS: `brew install ffmpeg`
-- Ubuntu/Debian: `sudo apt install ffmpeg`
-- Windows: install from https://www.ffmpeg.org/download.html
-
-## API endpoints
-
-- `POST /api/jobs` creates a generation job
-- `GET /api/jobs/{job_id}` checks the job status
-- `POST /api/generate` runs a direct generation request
-- `GET /download/{file_name}` downloads the generated video
-
-## Example request
-
-```bash
-curl -X POST http://localhost:8000/api/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "prompt": "a cinematic neon city at night",
-    "duration": 5,
-    "aspect_ratio": "16:9",
-    "provider": "mock"
-  }'
-```
-
-## Notes
-
-This project is a strong starter for a real AI video SaaS, but you will still need:
-- user authentication
-- storage and object uploads
-- a queue/worker service like Celery or Redis in production
-- GPU-backed generation providers for real commercial outputs
-- moderation and rate limiting
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user

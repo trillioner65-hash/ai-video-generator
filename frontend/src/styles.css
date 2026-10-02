@@ -1,80 +1,242 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+async function apiFetch(url, options = {}, token) {
+  const headers = { ...(options.headers || {}) };
+
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+  }
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, { ...options, headers });
+  const contentType = response.headers.get('content-type') || '';
+  const data = contentType.includes('application/json') ? await response.json() : await response.text();
+
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || 'Request failed');
+  }
+
+  return data;
+}
 
 function App() {
-  const [prompt, setPrompt] = useState('A futuristic city skyline at night with holograms and flying cars');
+  const [token, setToken] = useState(() => localStorage.getItem('ai_video_token') || '');
+  const [user, setUser] = useState(null);
+  const [videos, setVideos] = useState([]);
+  const [authMode, setAuthMode] = useState('login');
+  const [authForm, setAuthForm] = useState({ username: '', email: '', password: '' });
+  const [prompt, setPrompt] = useState('A cinematic neon city at night with floating cars and glowing streets');
   const [provider, setProvider] = useState('mock');
   const [duration, setDuration] = useState(5);
   const [aspectRatio, setAspectRatio] = useState('16:9');
-  const [jobId, setJobId] = useState(null);
   const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const isLoggedIn = Boolean(token);
+
   useEffect(() => {
-    if (!jobId) return;
+    if (!token) {
+      setUser(null);
+      setVideos([]);
+      return;
+    }
+
+    localStorage.setItem('ai_video_token', token);
+
+    const loadProfile = async () => {
+      try {
+        const data = await apiFetch(`${API_BASE}/api/me`, {}, token);
+        setUser(data);
+      } catch (err) {
+        setError(err.message || 'Session expired');
+        handleLogout();
+      }
+    };
+
+    const loadVideos = async () => {
+      try {
+        const data = await apiFetch(`${API_BASE}/api/videos`, {}, token);
+        setVideos(data);
+      } catch (err) {
+        setError(err.message || 'Could not load videos');
+      }
+    };
+
+    loadProfile();
+    loadVideos();
+  }, [token]);
+
+  useEffect(() => {
+    if (!job || !token) return;
 
     const interval = setInterval(async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/jobs/${jobId}`);
-        const data = await response.json();
+        const data = await apiFetch(`${API_BASE}/api/jobs/${job.id}`, {}, token);
         setJob(data);
 
         if (data.status === 'completed' || data.status === 'failed') {
           clearInterval(interval);
           setLoading(false);
+          if (data.status === 'completed') {
+            const refreshed = await apiFetch(`${API_BASE}/api/videos`, {}, token);
+            setVideos(refreshed);
+          }
         }
       } catch (err) {
         console.error(err);
         clearInterval(interval);
         setLoading(false);
-        setError('Failed to fetch job status.');
+        setError(err.message || 'Could not fetch job update');
       }
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [jobId]);
+  }, [job, token]);
 
-  const handleGenerate = async () => {
-    setLoading(true);
-    setError('');
+  const handleLogout = () => {
+    setToken('');
+    localStorage.removeItem('ai_video_token');
+    setUser(null);
+    setVideos([]);
     setJob(null);
+  };
+
+  const handleAuthSubmit = async (event) => {
+    event.preventDefault();
+    setError('');
 
     try {
-      const response = await fetch(`${API_BASE}/api/jobs`, {
+      const payload = {
+        username: authForm.username,
+        email: authMode === 'register' ? authForm.email : undefined,
+        password: authForm.password,
+      };
+
+      const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
+      const response = await apiFetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      setToken(response.token);
+      setUser(response.user);
+      setAuthForm({ username: '', email: '', password: '' });
+    } catch (err) {
+      setError(err.message || 'Authentication failed');
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!token) {
+      setError('Please log in first.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await apiFetch(`${API_BASE}/api/jobs`, {
+        method: 'POST',
         body: JSON.stringify({
           prompt,
           duration,
           aspect_ratio: aspectRatio,
           provider,
         }),
-      });
+      }, token);
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || 'Request failed');
-      }
-
-      setJobId(data.job_id);
-      setJob({ id: data.job_id, status: 'queued' });
+      setJob({ id: response.job_id, status: 'queued' });
     } catch (err) {
-      setError(err.message || 'Something went wrong');
+      setError(err.message || 'Unable to start generation');
       setLoading(false);
     }
   };
 
-  const videoUrl = job && job.file_name ? `${API_BASE}/download/${job.file_name}` : '';
+  const historySummary = useMemo(
+    () => videos.slice(0, 8),
+    [videos]
+  );
+
+  if (!isLoggedIn) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <div className="auth-header">
+            <p className="eyebrow">Open studio</p>
+            <h1>AI Video Generator</h1>
+          </div>
+
+          <div className="auth-toggle">
+            <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
+              Login
+            </button>
+            <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
+              Register
+            </button>
+          </div>
+
+          <form className="auth-form" onSubmit={handleAuthSubmit}>
+            <label>
+              <span>Username</span>
+              <input
+                value={authForm.username}
+                onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })}
+                required
+              />
+            </label>
+
+            {authMode === 'register' && (
+              <label>
+                <span>Email</span>
+                <input
+                  type="email"
+                  value={authForm.email}
+                  onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
+                  required
+                />
+              </label>
+            )}
+
+            <label>
+              <span>Password</span>
+              <input
+                type="password"
+                value={authForm.password}
+                onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
+                required
+              />
+            </label>
+
+            {error && <div className="status error">{error}</div>}
+
+            <button type="submit" className="primary-btn">
+              {authMode === 'login' ? 'Login' : 'Create account'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page-shell">
       <div className="app-card">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Creative studio</p>
+            <p className="eyebrow">Creative workspace</p>
             <h1>AI Video Generator</h1>
+          </div>
+
+          <div className="session-box">
+            <span>{user?.username || 'User'}</span>
+            <button className="secondary-btn" onClick={handleLogout}>Logout</button>
           </div>
         </header>
 
@@ -83,8 +245,8 @@ function App() {
             <span>Prompt</span>
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={6}
+              onChange={(event) => setPrompt(event.target.value)}
+              rows={7}
               placeholder="Describe the video you want to generate..."
             />
           </label>
@@ -92,7 +254,7 @@ function App() {
           <div className="sidebar-grid">
             <label className="field">
               <span>Provider</span>
-              <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+              <select value={provider} onChange={(event) => setProvider(event.target.value)}>
                 <option value="mock">Mock</option>
                 <option value="replicate">Replicate</option>
               </select>
@@ -100,7 +262,7 @@ function App() {
 
             <label className="field">
               <span>Duration</span>
-              <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+              <select value={duration} onChange={(event) => setDuration(Number(event.target.value))}>
                 <option value={3}>3s</option>
                 <option value={5}>5s</option>
                 <option value={8}>8s</option>
@@ -110,14 +272,14 @@ function App() {
 
             <label className="field">
               <span>Aspect ratio</span>
-              <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}>
+              <select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>
                 <option value="16:9">16:9</option>
                 <option value="1:1">1:1</option>
                 <option value="9:16">9:16</option>
               </select>
             </label>
 
-            <button className="generate-btn" onClick={handleGenerate} disabled={loading}>
+            <button className="primary-btn" onClick={handleGenerate} disabled={loading}>
               {loading ? 'Generating...' : 'Generate video'}
             </button>
           </div>
@@ -129,21 +291,46 @@ function App() {
           <div className="job-panel">
             <div className="status-row">
               <span className={`badge status-${job.status || 'unknown'}`}>{job.status || 'unknown'}</span>
-              {jobId && <code>{jobId}</code>}
+              <code>{job.id}</code>
             </div>
 
             {job.error && <div className="status error">{job.error}</div>}
 
-            {videoUrl && (
+            {job.status === 'completed' && job.file_name && (
               <div className="output-block">
-                <video controls src={videoUrl} />
-                <a href={videoUrl} download className="download-link">
+                <video controls src={`${API_BASE}/download/${job.file_name}`} />
+                <a href={`${API_BASE}/download/${job.file_name}`} download className="download-link">
                   Download video
                 </a>
               </div>
             )}
           </div>
         )}
+
+        <div className="gallery-panel">
+          <div className="gallery-header">
+            <h2>My video history</h2>
+          </div>
+
+          {historySummary.length === 0 ? (
+            <p className="empty-state">No videos yet. Generate your first one.</p>
+          ) : (
+            <div className="gallery-grid">
+              {historySummary.map((video) => (
+                <div key={video.id} className="video-card">
+                  <video controls src={`${API_BASE}${video.download_url}`} />
+                  <div className="video-meta">
+                    <strong>{video.prompt.slice(0, 60) || 'Untitled prompt'}</strong>
+                    <span>{video.provider} • {video.duration}s • {video.aspect_ratio}</span>
+                    <a href={`${API_BASE}${video.download_url}`} download>
+                      Download
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
