@@ -1,0 +1,152 @@
+import { useState, useEffect } from 'react';
+
+const API_BASE = 'http://localhost:8000';
+
+function App() {
+  const [prompt, setPrompt] = useState('A futuristic city skyline at night with holograms and flying cars');
+  const [provider, setProvider] = useState('mock');
+  const [duration, setDuration] = useState(5);
+  const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [jobId, setJobId] = useState(null);
+  const [job, setJob] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!jobId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/jobs/${jobId}`);
+        const data = await response.json();
+        setJob(data);
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          clearInterval(interval);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error(err);
+        clearInterval(interval);
+        setLoading(false);
+        setError('Failed to fetch job status.');
+      }
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [jobId]);
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError('');
+    setJob(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          duration,
+          aspect_ratio: aspectRatio,
+          provider,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || 'Request failed');
+      }
+
+      setJobId(data.job_id);
+      setJob({ id: data.job_id, status: 'queued' });
+    } catch (err) {
+      setError(err.message || 'Something went wrong');
+      setLoading(false);
+    }
+  };
+
+  const videoUrl = job && job.file_name ? `${API_BASE}/download/${job.file_name}` : '';
+
+  return (
+    <div className="page-shell">
+      <div className="app-card">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Creative studio</p>
+            <h1>AI Video Generator</h1>
+          </div>
+        </header>
+
+        <div className="controls-grid">
+          <label className="field">
+            <span>Prompt</span>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={6}
+              placeholder="Describe the video you want to generate..."
+            />
+          </label>
+
+          <div className="sidebar-grid">
+            <label className="field">
+              <span>Provider</span>
+              <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                <option value="mock">Mock</option>
+                <option value="replicate">Replicate</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Duration</span>
+              <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}>
+                <option value={3}>3s</option>
+                <option value={5}>5s</option>
+                <option value={8}>8s</option>
+                <option value={10}>10s</option>
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Aspect ratio</span>
+              <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}>
+                <option value="16:9">16:9</option>
+                <option value="1:1">1:1</option>
+                <option value="9:16">9:16</option>
+              </select>
+            </label>
+
+            <button className="generate-btn" onClick={handleGenerate} disabled={loading}>
+              {loading ? 'Generating...' : 'Generate video'}
+            </button>
+          </div>
+        </div>
+
+        {error && <div className="status error">{error}</div>}
+
+        {job && (
+          <div className="job-panel">
+            <div className="status-row">
+              <span className={`badge status-${job.status || 'unknown'}`}>{job.status || 'unknown'}</span>
+              {jobId && <code>{jobId}</code>}
+            </div>
+
+            {job.error && <div className="status error">{job.error}</div>}
+
+            {videoUrl && (
+              <div className="output-block">
+                <video controls src={videoUrl} />
+                <a href={videoUrl} download className="download-link">
+                  Download video
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;

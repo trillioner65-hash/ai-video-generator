@@ -1,81 +1,155 @@
-# AI Video Generator
+from __future__ import annotations
 
-A minimal AI video generator app with:
-- FastAPI backend
-- Simple HTML/JS frontend
-- mock video generation mode that works without an API key
-- optional Replicate integration for real AI generation
+import asyncio
+import os
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict
 
-## Features
-- Enter a prompt
-- Generate a video
-- Download the result
-- Works without external API services by default
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
-## Quick start
+from services.video_service import generate_video_from_prompt
 
-1. Create and activate a virtual environment
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
+jobs: Dict[str, Dict[str, Any]] = {}
+job_lock = asyncio.Lock()
 
-2. Install dependencies
 
-```bash
-pip install -r requirements.txt
-```
+class GenerationRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    duration: int = Field(default=5, ge=1, le=30)
+    aspect_ratio: str = Field(default="16:9")
+    provider: str = Field(default="mock")
 
-3. Copy environment variables
 
-```bash
-cp .env.example .env
-```
+class JobStatusResponse(BaseModel):
+    id: str
+    status: str
+    prompt: str
+    duration: int
+    aspect_ratio: str
+    provider: str
+    file_name: str | None = None
+    created_at: str
+    updated_at: str
+    error: str | None = None
 
-4. Start the app
 
-```bash
-uvicorn app:app --reload
-```
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.jobs = jobs
+    yield
 
-Open http://localhost:8000 in your browser.
 
-## Optional real AI generation
+app = FastAPI(title="AI Video Generator", version="1.1.0", lifespan=lifespan)
 
-If you want true AI-generated video instead of the built-in demo mode, add your token and model in `.env`:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-```env
-REPLICATE_API_TOKEN=your_token_here
-VIDEO_MODEL=genmo/mochi-1-preview
-```
 
-Then restart the app.
+async def _run_job(job_id: str, request: GenerationRequest) -> None:
+    try:
+        async with job_lock:
+            jobs[job_id]["status"] = "processing"
+            jobs[job_id]["updated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
 
-## Mock mode
+        file_name = await asyncio.to_thread(
+            generate_video_from_prompt,
+            request.prompt,
+            request.duration,
+            request.aspect_ratio,
+            request.provider,
+        )
 
-Without a Replicate token, the app creates a demo MP4 using ffmpeg with the prompt overlaid on a color background. This lets the app run locally even without GPU access.
+        async with job_lock:
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["file_name"] = file_name
+            jobs[job_id]["updated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+    except Exception as exc:  # pragma: no cover - defensive error handling
+        async with job_lock:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = str(exc)
+            jobs[job_id]["updated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
 
-## FFmpeg requirement
 
-Mock mode requires `ffmpeg` to be installed:
+@app.get("/health")
+async def health() -> Dict[str, str]:
+    return {"status": "ok"}
 
-- macOS: `brew install ffmpeg`
-- Ubuntu/Debian: `sudo apt install ffmpeg`
-- Windows: install from https://www.ffmpeg.org/download.html
 
-## Project layout
+@app.post("/api/jobs")
+async def create_job(request: GenerationRequest) -> Dict[str, Any]:
+    job_id = str(uuid.uuid4())
+    now = __import__("datetime").datetime.utcnow().isoformat() + "Z"
 
-```text
-ai-video-generator/
-├── app.py
-├── requirements.txt
-├── .env.example
-├── .env
-├── README.md
-├── services/
-│   └── video_service.py
-├── templates/
-│   └── index.html
-└── output/
-```
+    jobs[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "prompt": request.prompt,
+        "duration": request.duration,
+        "aspect_ratio": request.aspect_ratio,
+        "provider": request.provider,
+        "file_name": None,
+        "created_at": now,
+        "updated_at": now,
+        "error": None,
+    }
+
+    asyncio.create_task(_run_job(job_id, request))
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str) -> Dict[str, Any]:
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/generate")
+async def direct_generate(request: GenerationRequest) -> Dict[str, Any]:
+    # Simple synchronous wrapper for compatibility with older clients.
+    file_name = await asyncio.to_thread(
+        generate_video_from_prompt,
+        request.prompt,
+        request.duration,
+        request.aspect_ratio,
+        request.provider,
+    )
+    return {"status": "success", "file_name": file_name}
+
+
+@app.get("/")
+async def root() -> FileResponse:
+    html_path = Path("frontend/dist/index.html")
+    if html_path.exists():
+        return FileResponse(html_path)
+    return FileResponse("templates/index.html")
+
+
+@app.get("/assets/{file_name}")
+async def assets(file_name: str):
+    asset_path = Path("frontend/dist/assets") / file_name
+    if asset_path.exists():
+        return FileResponse(asset_path)
+    raise HTTPException(status_code=404, detail="Asset not found")
+
+
+@app.get("/download/{file_name}")
+async def download_video(file_name: str):
+    file_path = OUTPUT_DIR / file_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(path=str(file_path), media_type="video/mp4", filename=file_name)

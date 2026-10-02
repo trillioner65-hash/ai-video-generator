@@ -1,116 +1,123 @@
-import os
-import subprocess
-import uuid
-from pathlib import Path
+# AI Video Generator
 
-try:
-    import replicate
-except Exception:  # pragma: no cover
-    replicate = None
+A full-stack AI video generation starter with:
+- FastAPI backend
+- React frontend
+- async job queue
+- mock generation mode for local development
+- optional real text-to-video generation via Replicate
 
-OUTPUT_DIR = Path("output")
-OUTPUT_DIR.mkdir(exist_ok=True)
+## Overview
 
+This project demonstrates a realistic AI video app workflow:
+- user enters a prompt
+- the frontend submits a generation request
+- the backend queues the job and processes it asynchronously
+- the frontend polls for status and downloads the finished video
 
-def _safe_prompt(prompt: str) -> str:
-    return prompt.replace("'", "\\'").strip()
+## Tech stack
 
+- Backend: FastAPI + Python
+- Frontend: React + Vite
+- Video generation: mock ffmpeg mode or Replicate API
+- Storage: local disk under `output/`
 
-def _create_mock_video(prompt: str, duration: int = 5, aspect_ratio: str = "16:9") -> str:
-    width, height = {
-        "16:9": (1280, 720),
-        "1:1": (720, 720),
-        "9:16": (720, 1280),
-    }.get(aspect_ratio, (1280, 720))
+## Project layout
 
-    file_name = f"{uuid.uuid4()}.mp4"
-    output_path = OUTPUT_DIR / file_name
-    safe_prompt = _safe_prompt(prompt)
+```text
+ai-video-generator/
+├── app.py
+├── requirements.txt
+├── .env.example
+├── README.md
+├── services/
+│   └── video_service.py
+├── templates/
+│   └── index.html
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── index.html
+│   └── src/
+│       ├── App.jsx
+│       ├── main.jsx
+│       └── styles.css
+├── output/
+└── .venv/
+```
 
-    filter_expr = (
-        f"drawtext=text='{safe_prompt}':fontcolor=white:fontsize=42:"
-        f"x=(w-text_w)/2:y=(h-text_h)/2"
-    )
+## Quick start
 
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c=0x111827:s={width}x{height}:d={duration}",
-        "-vf",
-        filter_expr,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        str(output_path),
-    ]
+### 1) Python backend
 
-    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {result.stderr or result.stdout}")
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app:app --reload
+```
 
-    return file_name
+### 2) React frontend
 
+```bash
+cd frontend
+npm install
+npm run dev -- --host 0.0.0.0
+```
 
-def _generate_with_replicate(prompt: str, duration: int = 5, aspect_ratio: str = "16:9") -> str:
-    token = os.getenv("REPLICATE_API_TOKEN")
-    model = os.getenv("VIDEO_MODEL")
+Open the frontend in the browser at:
+```text
+http://localhost:5173
+```
 
-    if not token or not model:
-        raise RuntimeError("REPLICATE_API_TOKEN and VIDEO_MODEL must be set in .env for real generation.")
+The backend is available at:
+```text
+http://localhost:8000
+```
 
-    if replicate is None:
-        raise RuntimeError("replicate package is not installed")
+## Environment variables
 
-    client = replicate.Client(api_token=token)
+```env
+REPLICATE_API_TOKEN=
+VIDEO_MODEL=genmo/mochi-1-preview
+```
 
-    output = client.run(
-        model,
-        input={
-            "prompt": prompt,
-            "duration": duration,
-            "aspect_ratio": aspect_ratio,
-        },
-    )
+If no token is set, the app falls back to mock generation.
 
-    if isinstance(output, (list, tuple)):
-        output = output[0]
+## Mock mode requirements
 
-    if isinstance(output, str):
-        if output.startswith("http://") or output.startswith("https://"):
-            import httpx
+The mock generator uses ffmpeg, so you need `ffmpeg` installed:
 
-            response = httpx.get(output, follow_redirects=True)
-            response.raise_for_status()
+- macOS: `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt install ffmpeg`
+- Windows: install from https://www.ffmpeg.org/download.html
 
-            file_name = f"{uuid.uuid4()}.mp4"
-            output_path = OUTPUT_DIR / file_name
-            output_path.write_bytes(response.content)
-            return file_name
+## API endpoints
 
-        if os.path.exists(output):
-            file_name = f"{uuid.uuid4()}.mp4"
-            output_path = OUTPUT_DIR / file_name
-            output_path.write_bytes(Path(output).read_bytes())
-            return file_name
+- `POST /api/jobs` creates a generation job
+- `GET /api/jobs/{job_id}` checks the job status
+- `POST /api/generate` runs a direct generation request
+- `GET /download/{file_name}` downloads the generated video
 
-    if hasattr(output, "read"):
-        file_name = f"{uuid.uuid4()}.mp4"
-        output_path = OUTPUT_DIR / file_name
-        output_path.write_bytes(output.read())
-        return file_name
+## Example request
 
-    raise RuntimeError(f"Unsupported output type from Replicate: {type(output)}")
+```bash
+curl -X POST http://localhost:8000/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "a cinematic neon city at night",
+    "duration": 5,
+    "aspect_ratio": "16:9",
+    "provider": "mock"
+  }'
+```
 
+## Notes
 
-def generate_video_from_prompt(prompt: str, duration: int = 5, aspect_ratio: str = "16:9") -> str:
-    token = os.getenv("REPLICATE_API_TOKEN")
-    model = os.getenv("VIDEO_MODEL")
-
-    if token and model:
-        return _generate_with_replicate(prompt, duration=duration, aspect_ratio=aspect_ratio)
-
-    return _create_mock_video(prompt, duration=duration, aspect_ratio=aspect_ratio)
+This project is a strong starter for a real AI video SaaS, but you will still need:
+- user authentication
+- storage and object uploads
+- a queue/worker service like Celery or Redis in production
+- GPU-backed generation providers for real commercial outputs
+- moderation and rate limiting
