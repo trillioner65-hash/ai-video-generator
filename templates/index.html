@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Video Generator</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 40px 20px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .container {
+      width: min(900px, 100%);
+      background: #111827;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    }
+
+    h1 {
+      margin-top: 0;
+      margin-bottom: 20px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      resize: vertical;
+      border-radius: 12px;
+      border: 1px solid #374151;
+      background: #0b1220;
+      color: white;
+      padding: 14px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    .controls {
+      margin-top: 16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    select, button {
+      border-radius: 10px;
+      border: none;
+      padding: 12px 16px;
+      font-size: 15px;
+    }
+
+    select {
+      background: #1f2937;
+      color: white;
+    }
+
+    button {
+      background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+      color: white;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button:hover {
+      filter: brightness(1.08);
+    }
+
+    .result {
+      margin-top: 24px;
+      display: none;
+    }
+
+    .result.visible {
+      display: block;
+    }
+
+    video {
+      max-width: 100%;
+      border-radius: 12px;
+      margin-top: 16px;
+      background: #000;
+    }
+
+    .status {
+      margin-top: 14px;
+      font-size: 14px;
+      color: #93c5fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Video Generator</h1>
+
+    <textarea id="prompt" placeholder="Describe the video you want to generate...">A cinematic futuristic city at night with neon lights and flying cars</textarea>
+
+    <div class="controls">
+      <label>
+        Duration:
+        <select id="duration">
+          <option value="3">3s</option>
+          <option value="5" selected>5s</option>
+          <option value="8">8s</option>
+          <option value="10">10s</option>
+        </select>
+      </label>
+
+      <label>
+        Aspect ratio:
+        <select id="aspectRatio">
+          <option value="16:9" selected>16:9</option>
+          <option value="1:1">1:1</option>
+          <option value="9:16">9:16</option>
+        </select>
+      </label>
+
+      <button id="generateBtn">Generate Video</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div id="result" class="result">
+      <video id="videoPlayer" controls></video>
+      <br />
+      <a id="downloadLink" href="#" target="_blank" download>Download video</a>
+    </div>
+  </div>
+
+  <script>
+    const generateBtn = document.getElementById('generateBtn');
+    const promptInput = document.getElementById('prompt');
+    const durationInput = document.getElementById('duration');
+    const aspectRatioInput = document.getElementById('aspectRatio');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const videoPlayer = document.getElementById('videoPlayer');
+    const downloadLink = document.getElementById('downloadLink');
+
+    generateBtn.addEventListener('click', async () => {
+      const prompt = promptInput.value.trim();
+      if (!prompt) {
+        statusEl.textContent = 'Please enter a prompt.';
+        return;
+      }
+
+      statusEl.textContent = 'Generating video...';
+      generateBtn.disabled = true;
+
+      try {
+        const response = await fetch('/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            prompt,
+            duration: Number(durationInput.value),
+            aspect_ratio: aspectRatioInput.value
+          })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || 'Generation failed');
+        }
+
+        const fileName = data.file_name;
+        const videoUrl = `/download/${fileName}`;
+
+        videoPlayer.src = videoUrl;
+        videoPlayer.load();
+        downloadLink.href = videoUrl;
+        downloadLink.download = fileName;
+
+        resultEl.classList.add('visible');
+        statusEl.textContent = 'Video generated successfully.';
+      } catch (error) {
+        statusEl.textContent = error.message || 'Something went wrong.';
+        console.error(error);
+      } finally {
+        generateBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
