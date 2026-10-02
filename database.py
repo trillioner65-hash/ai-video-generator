@@ -1,10 +1,9 @@
-fastapi==0.115.0
-uvicorn==0.30.6
-pydantic==2.9.2
-python-dotenv==1.0.1
-sqlalchemy==2.0.35
-passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.3.0
-python-multipart==0.0.9
-replicate==1.0.6
-httpx==0.27.2
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
